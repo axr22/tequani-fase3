@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import 'register_screen.dart';
 import 'forgot_password_screen.dart';
+// IMPORTACIÓN NUEVA: Conecta con el archivo de la barra de navegación que acabas de crear
+import '../main_navigator.dart'; 
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -33,8 +35,13 @@ class _LoginScreenState extends State<LoginScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(error), backgroundColor: Colors.red),
       );
+    } else {
+      // ÉXITO: Si no hay error, destruye la pantalla de login y empuja la barra de navegación
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const MainNavigator()),
+      );
     }
-    // Si inicia sesión correctamente, el StreamBuilder del main cambiará a la app principal.
   }
 
   @override
@@ -49,12 +56,12 @@ class _LoginScreenState extends State<LoginScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Icon(Icons.sports_esports, size: 90, color: Color(0xFF7A1C1C)), // Tezontle Red[cite: 1]
+                const Icon(Icons.sports_esports, size: 90, color: Color(0xFF7A1C1C)), 
                 const SizedBox(height: 10),
                 const Text(
                   'COMUNIDAD GAMER',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Color(0xFFC29B38)), // Ochre Gold[cite: 1]
+                  style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Color(0xFFC29B38)), 
                 ),
                 const SizedBox(height: 30),
                 TextFormField(
