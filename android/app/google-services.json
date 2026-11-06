@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "174317291667",
+    "project_id": "tequani",
+    "storage_bucket": "tequani.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:174317291667:android:f69274feecd52e428e6566",
+        "android_client_info": {
+          "package_name": "com.example.tequani"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBv66wRUZg0j82tMmHIZz1gvXPOVucjrYc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
