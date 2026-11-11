@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:image_picker/image_picker.dart';
 import 'auth/login_screen.dart';
 
@@ -23,6 +25,8 @@ class PerfilScreen extends StatefulWidget {
 class _PerfilScreenState extends State<PerfilScreen> {
   bool _cargandoPerfil = true;
   final ImagePicker _picker = ImagePicker();
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
 
   Uint8List? _fotoPerfilBytes;
   String _nombreUsuario = 'Gonzalo_Guerrero';
@@ -34,28 +38,72 @@ class _PerfilScreenState extends State<PerfilScreen> {
   @override
   void initState() {
     super.initState();
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null && user.email != null) {
-      _nombreUsuario = user.email!.split('@').first;
+    _cargarDatosDesdeFirestore();
+  }
+
+  Future<void> _cargarDatosDesdeFirestore() async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      if (mounted) setState(() => _cargandoPerfil = false);
+      return;
     }
-    Future.delayed(const Duration(milliseconds: 500), () {
-      if (mounted) {
-        setState(() => _cargandoPerfil = false);
+
+    try {
+      final doc = await _firestore.collection('usuarios').doc(user.uid).get();
+      if (doc.exists && doc.data() != null) {
+        final data = doc.data()!;
+        _nombreUsuario = (data['nombre'] ?? user.email?.split('@').first ?? 'Guerrero').toString();
+        _tituloGuerrero = (data['titulo'] ?? 'Portador de la Espada de Hielo').toString();
+        _biografia = (data['biografia'] ?? 'Explorando el Templo de Obsidiana.').toString();
+        _notificacionesActivas = data['notificaciones'] ?? true;
+        _efectoEscarchaActivo = data['escarcha'] ?? true;
+
+        if (data['fotoBase64'] != null && data['fotoBase64'].toString().isNotEmpty) {
+          _fotoPerfilBytes = base64Decode(data['fotoBase64'].toString());
+        }
+      } else {
+        _nombreUsuario = user.email?.split('@').first ?? 'Gonzalo_Guerrero';
+        await _guardarEnFirestore();
       }
-    });
+    } catch (_) {}
+
+    if (mounted) {
+      setState(() => _cargandoPerfil = false);
+    }
+  }
+
+  Future<void> _guardarEnFirestore() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    await _firestore.collection('usuarios').doc(user.uid).set({
+      'nombre': _nombreUsuario,
+      'titulo': _tituloGuerrero,
+      'biografia': _biografia,
+      'notificaciones': _notificacionesActivas,
+      'escarcha': _efectoEscarchaActivo,
+      'fotoBase64': _fotoPerfilBytes != null ? base64Encode(_fotoPerfilBytes!) : null,
+      'email': user.email,
+      'actualizado': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   Future<void> _cambiarFotoPerfil() async {
-    final XFile? imagen = await _picker.pickImage(source: ImageSource.gallery);
+    final XFile? imagen = await _picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 400,
+      imageQuality: 65,
+    );
     if (imagen != null) {
       final bytes = await imagen.readAsBytes();
+      setState(() {
+        _fotoPerfilBytes = bytes;
+      });
+      await _guardarEnFirestore();
       if (mounted) {
-        setState(() {
-          _fotoPerfilBytes = bytes;
-        });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('¡Foto de perfil actualizada con éxito!'),
+            content: Text('¡Foto de perfil sincronizada en Firebase!'),
             backgroundColor: deepJadeGreen,
             duration: Duration(seconds: 2),
           ),
@@ -89,7 +137,7 @@ class _PerfilScreenState extends State<PerfilScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Personalizar Guerrero',
+                'Personalizar Guerrero (Sincronizado)',
                 style: TextStyle(color: ochreGold, fontSize: 18, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 16),
@@ -160,7 +208,7 @@ class _PerfilScreenState extends State<PerfilScreen> {
                       backgroundColor: tezontleRed,
                       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                     ),
-                    onPressed: () {
+                    onPressed: () async {
                       setState(() {
                         if (nombreCtrl.text.trim().isNotEmpty) {
                           _nombreUsuario = nombreCtrl.text.trim();
@@ -173,15 +221,18 @@ class _PerfilScreenState extends State<PerfilScreen> {
                         }
                       });
                       Navigator.pop(context);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Datos de perfil guardados'),
-                          backgroundColor: deepJadeGreen,
-                        ),
-                      );
+                      await _guardarEnFirestore();
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Perfil guardado en Cloud Firestore'),
+                            backgroundColor: deepJadeGreen,
+                          ),
+                        );
+                      }
                     },
-                    icon: const Icon(Icons.save, color: amatePaper, size: 18),
-                    label: const Text('Guardar Cambios', style: TextStyle(color: amatePaper, fontWeight: FontWeight.bold)),
+                    icon: const Icon(Icons.cloud_upload, color: amatePaper, size: 18),
+                    label: const Text('Guardar en la Nube', style: TextStyle(color: amatePaper, fontWeight: FontWeight.bold)),
                   ),
                 ],
               ),
@@ -194,7 +245,7 @@ class _PerfilScreenState extends State<PerfilScreen> {
   }
 
   Future<void> _cerrarSesion() async {
-    await FirebaseAuth.instance.signOut();
+    await _auth.signOut();
     if (!mounted) return;
     Navigator.pushAndRemoveUntil(
       context,
@@ -205,7 +256,7 @@ class _PerfilScreenState extends State<PerfilScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final emailUsuario = FirebaseAuth.instance.currentUser?.email ?? 'guerrero@tequani.com';
+    final emailUsuario = _auth.currentUser?.email ?? 'guerrero@tequani.com';
 
     return Scaffold(
       backgroundColor: obsidianBlack,
@@ -229,7 +280,7 @@ class _PerfilScreenState extends State<PerfilScreen> {
                 children: [
                   CircularProgressIndicator(color: ochreGold),
                   SizedBox(height: 16),
-                  Text('Cargando armadura y estadísticas...', style: TextStyle(color: amatePaper)),
+                  Text('Sincronizando perfil con Firebase...', style: TextStyle(color: amatePaper)),
                 ],
               ),
             )
@@ -237,142 +288,113 @@ class _PerfilScreenState extends State<PerfilScreen> {
               physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
               padding: const EdgeInsets.all(18),
               children: [
-                // TARJETA DE PERFIL ANIMADA CON CAMBIO DE FOTO REAL
-                TweenAnimationBuilder<double>(
-                  duration: const Duration(milliseconds: 500),
-                  tween: Tween(begin: 0.0, end: 1.0),
-                  builder: (context, value, child) {
-                    return Opacity(
-                      opacity: value,
-                      child: Transform.translate(
-                        offset: Offset(0, 25 * (1 - value)),
-                        child: child,
-                      ),
-                    );
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [deepJadeGreen, obsidianBlack],
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                      ),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: ochreGold.withValues(alpha: 0.5), width: 1.5),
+                Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [deepJadeGreen, obsidianBlack],
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
                     ),
-                    child: Column(
-                      children: [
-                        Stack(
-                          alignment: Alignment.bottomRight,
-                          children: [
-                            GestureDetector(
-                              onTap: _cambiarFotoPerfil,
-                              child: CircleAvatar(
-                                radius: 54,
-                                backgroundColor: ochreGold,
-                                child: CircleAvatar(
-                                  radius: 51,
-                                  backgroundColor: obsidianBlack,
-                                  backgroundImage: _fotoPerfilBytes != null ? MemoryImage(_fotoPerfilBytes!) : null,
-                                  child: _fotoPerfilBytes == null
-                                      ? const Icon(Icons.person, size: 54, color: amatePaper)
-                                      : null,
-                                ),
-                              ),
-                            ),
-                            IconButton(
-                              style: IconButton.styleFrom(
-                                backgroundColor: tezontleRed,
-                                padding: const EdgeInsets.all(8),
-                              ),
-                              icon: const Icon(Icons.camera_alt, color: amatePaper, size: 20),
-                              onPressed: _cambiarFotoPerfil,
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 14),
-                        Text(
-                          _nombreUsuario,
-                          style: const TextStyle(color: ochreGold, fontSize: 22, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          _tituloGuerrero,
-                          style: const TextStyle(color: amatePaper, fontSize: 14, fontStyle: FontStyle.italic),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          emailUsuario,
-                          style: TextStyle(color: amatePaper.withValues(alpha: 0.6), fontSize: 12),
-                        ),
-                        const SizedBox(height: 12),
-                        Text(
-                          _biografia,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: amatePaper.withValues(alpha: 0.9), fontSize: 13),
-                        ),
-                        const SizedBox(height: 16),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            OutlinedButton.icon(
-                              style: OutlinedButton.styleFrom(
-                                side: const BorderSide(color: ochreGold),
-                              ),
-                              onPressed: _cambiarFotoPerfil,
-                              icon: const Icon(Icons.photo_library_outlined, color: ochreGold, size: 18),
-                              label: const Text('Cambiar Foto', style: TextStyle(color: ochreGold)),
-                            ),
-                            const SizedBox(width: 12),
-                            ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: tezontleRed,
-                              ),
-                              onPressed: _mostrarModalEditarPerfil,
-                              icon: const Icon(Icons.edit, color: amatePaper, size: 18),
-                              label: const Text('Editar Nombre', style: TextStyle(color: amatePaper)),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: ochreGold.withValues(alpha: 0.5), width: 1.5),
                   ),
-                ),
-                const SizedBox(height: 20),
-
-                // ESTADÍSTICAS DEL GUERRERO EN EL JUEGO
-                TweenAnimationBuilder<double>(
-                  duration: const Duration(milliseconds: 650),
-                  tween: Tween(begin: 0.0, end: 1.0),
-                  builder: (context, value, child) {
-                    return Opacity(
-                      opacity: value,
-                      child: Transform.translate(
-                        offset: Offset(0, 25 * (1 - value)),
-                        child: child,
-                      ),
-                    );
-                  },
-                  child: Row(
+                  child: Column(
                     children: [
-                      Expanded(
-                        child: _buildStatCard('Nivel', '14', Icons.bolt),
+                      Stack(
+                        alignment: Alignment.bottomRight,
+                        children: [
+                          GestureDetector(
+                            onTap: _cambiarFotoPerfil,
+                            child: CircleAvatar(
+                              radius: 54,
+                              backgroundColor: ochreGold,
+                              child: CircleAvatar(
+                                radius: 51,
+                                backgroundColor: obsidianBlack,
+                                backgroundImage: _fotoPerfilBytes != null ? MemoryImage(_fotoPerfilBytes!) : null,
+                                child: _fotoPerfilBytes == null
+                                    ? const Icon(Icons.person, size: 54, color: amatePaper)
+                                    : null,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            style: IconButton.styleFrom(
+                              backgroundColor: tezontleRed,
+                              padding: const EdgeInsets.all(8),
+                            ),
+                            icon: const Icon(Icons.camera_alt, color: amatePaper, size: 20),
+                            onPressed: _cambiarFotoPerfil,
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: _buildStatCard('Jefes', '3 / 5', Icons.shield),
+                      const SizedBox(height: 14),
+                      Text(
+                        _nombreUsuario,
+                        style: const TextStyle(color: ochreGold, fontSize: 22, fontWeight: FontWeight.bold),
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: _buildStatCard('Armadura', 'Obsidiana', Icons.security),
+                      const SizedBox(height: 4),
+                      Text(
+                        _tituloGuerrero,
+                        style: const TextStyle(color: amatePaper, fontSize: 14, fontStyle: FontStyle.italic),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        emailUsuario,
+                        style: TextStyle(color: amatePaper.withValues(alpha: 0.6), fontSize: 12),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        _biografia,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: amatePaper.withValues(alpha: 0.9), fontSize: 13),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(color: ochreGold),
+                            ),
+                            onPressed: _cambiarFotoPerfil,
+                            icon: const Icon(Icons.photo_library_outlined, color: ochreGold, size: 18),
+                            label: const Text('Cambiar Foto', style: TextStyle(color: ochreGold)),
+                          ),
+                          const SizedBox(width: 12),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: tezontleRed,
+                            ),
+                            onPressed: _mostrarModalEditarPerfil,
+                            icon: const Icon(Icons.edit, color: amatePaper, size: 18),
+                            label: const Text('Editar Nombre', style: TextStyle(color: amatePaper)),
+                          ),
+                        ],
                       ),
                     ],
                   ),
                 ),
                 const SizedBox(height: 20),
 
-                // OPCIONES Y CONFIGURACIÓN
+                Row(
+                  children: [
+                    Expanded(
+                      child: _buildStatCard('Nivel', '14', Icons.bolt),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _buildStatCard('Jefes', '3 / 5', Icons.shield),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _buildStatCard('Armadura', 'Obsidiana', Icons.security),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+
                 Card(
                   color: deepJadeGreen.withValues(alpha: 0.22),
                   shape: RoundedRectangleBorder(
@@ -387,7 +409,10 @@ class _PerfilScreenState extends State<PerfilScreen> {
                         title: const Text('Notificaciones de la Comunidad', style: TextStyle(color: amatePaper, fontSize: 14)),
                         subtitle: Text('Avisar cuando respondan tus dudas', style: TextStyle(color: amatePaper.withValues(alpha: 0.6), fontSize: 12)),
                         value: _notificacionesActivas,
-                        onChanged: (val) => setState(() => _notificacionesActivas = val),
+                        onChanged: (val) {
+                          setState(() => _notificacionesActivas = val);
+                          _guardarEnFirestore();
+                        },
                       ),
                       const Divider(color: deepJadeGreen, height: 1),
                       SwitchListTile(
@@ -396,14 +421,16 @@ class _PerfilScreenState extends State<PerfilScreen> {
                         title: const Text('Efectos de Partículas de Escarcha', style: TextStyle(color: amatePaper, fontSize: 14)),
                         subtitle: Text('Sincronizar con tu partida de Tequani', style: TextStyle(color: amatePaper.withValues(alpha: 0.6), fontSize: 12)),
                         value: _efectoEscarchaActivo,
-                        onChanged: (val) => setState(() => _efectoEscarchaActivo = val),
+                        onChanged: (val) {
+                          setState(() => _efectoEscarchaActivo = val);
+                          _guardarEnFirestore();
+                        },
                       ),
                     ],
                   ),
                 ),
                 const SizedBox(height: 24),
 
-                // BOTÓN DE CERRAR SESIÓN
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: tezontleRed,
