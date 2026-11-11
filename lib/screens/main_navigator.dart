@@ -52,15 +52,15 @@ class _MainNavigatorState extends State<MainNavigator> {
         type: BottomNavigationBarType.fixed,
         items: [
           BottomNavigationBarItem(
-            icon: Image.asset('assets/inicio_btn.jpeg.jpeg', width: 26, height: 26),
+            icon: Image.asset('assets/inicio.png', width: 26, height: 26),
             label: 'Inicio',
           ),
           BottomNavigationBarItem(
-            icon: Image.asset('assets/noticias_btn.jpeg', width: 26, height: 26),
+            icon: Image.asset('assets/foro.png', width: 26, height: 26),
             label: 'Noticias',
           ),
           BottomNavigationBarItem(
-            icon: Image.asset('assets/perfil_btn.jpeg.jpeg', width: 26, height: 26),
+            icon: Image.asset('assets/perfil.png', width: 26, height: 26),
             label: 'Perfil',
           ),
         ],
