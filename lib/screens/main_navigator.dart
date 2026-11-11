@@ -1,5 +1,8 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:image_picker/image_picker.dart';
 import 'noticias_screen.dart';
 import 'perfil_screen.dart';
@@ -14,35 +17,6 @@ const Color ochreGold     = Color(0xFFC29B38);
 const Color amatePaper    = Color(0xFFE5D4C0); 
 
 // =====================================================================
-// MODELO DE DATOS PARA LAS PUBLICACIONES DEL FORO
-// =====================================================================
-class PostForo {
-  String usuario;
-  String tiempo;
-  String texto;
-  Uint8List? imagenBytes;
-  bool fotoDemo;
-  int likes;
-  int dislikes;
-  bool likeDado;
-  bool dislikeDado;
-  List<String> comentarios;
-
-  PostForo({
-    required this.usuario,
-    required this.tiempo,
-    required this.texto,
-    this.imagenBytes,
-    this.fotoDemo = false,
-    required this.likes,
-    required this.dislikes,
-    this.likeDado = false,
-    this.dislikeDado = false,
-    List<String>? comentarios,
-  }) : comentarios = comentarios ?? [];
-}
-
-// =====================================================================
 // CONTENEDOR PRINCIPAL (BARRA INFERIOR + MÓDULO DE INICIO INTEGRADO)
 // =====================================================================
 class MainNavigator extends StatefulWidget {
@@ -55,7 +29,6 @@ class MainNavigator extends StatefulWidget {
 class _MainNavigatorState extends State<MainNavigator> {
   int _currentIndex = 0;
 
-  // Las 3 pantallas: Inicio (aquí mismo), Noticias y Perfil (en sus propios archivos)
   final List<Widget> _pantallas = const [
     InicioScreen(),
     NoticiasScreen(),
@@ -83,7 +56,7 @@ class _MainNavigatorState extends State<MainNavigator> {
             label: 'Inicio',
           ),
           BottomNavigationBarItem(
-            icon: Image.asset('assets/noticias_btn.jpeg.jpeg', width: 26, height: 26),
+            icon: Image.asset('assets/noticias_btn.jpeg', width: 26, height: 26),
             label: 'Noticias',
           ),
           BottomNavigationBarItem(
@@ -97,7 +70,7 @@ class _MainNavigatorState extends State<MainNavigator> {
 }
 
 // =====================================================================
-// PANTALLA 1: INICIO / FORO (VIVE AQUÍ MISMO EN MAIN_NAVIGATOR)
+// PANTALLA 1: INICIO / FORO CONECTADO A CLOUD FIRESTORE (FASE 5)
 // =====================================================================
 class InicioScreen extends StatefulWidget {
   const InicioScreen({super.key});
@@ -107,22 +80,9 @@ class InicioScreen extends StatefulWidget {
 }
 
 class _InicioScreenState extends State<InicioScreen> {
-  bool _cargandoModulo = true;
   final ImagePicker _picker = ImagePicker();
-
-  final List<PostForo> _publicaciones = [
-    PostForo(
-      usuario: 'Gonzalo_Gamer',
-      tiempo: 'Hace 2 horas',
-      texto: 'No puedo pasar al jefe del Templo de Obsidiana. ¡La espada de hielo no le hace nada! ¿Alguien sabe qué hacer? Les dejo captura.',
-      fotoDemo: true,
-      likes: 24,
-      dislikes: 2,
-      comentarios: [
-        'Guerrero_Jaguar: Tienes que pegarle cuando su escudo cambie a color rojo.',
-      ],
-    ),
-  ];
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
 
   final TextEditingController _mensajeController = TextEditingController();
   final TextEditingController _comentarioController = TextEditingController();
@@ -130,62 +90,89 @@ class _InicioScreenState extends State<InicioScreen> {
   @override
   void initState() {
     super.initState();
-    Future.delayed(const Duration(milliseconds: 600), () {
-      if (mounted) {
-        setState(() => _cargandoModulo = false);
-      }
-    });
+    _verificarSemillaInicial();
   }
 
-  Future<void> _recargarForo() async {
-    await Future.delayed(const Duration(seconds: 1));
+  // Si la base de datos está vacía, crea el primer post automáticamente
+  Future<void> _verificarSemillaInicial() async {
+    try {
+      final snapshot = await _firestore.collection('publicaciones').limit(1).get();
+      if (snapshot.docs.isEmpty) {
+        await _firestore.collection('publicaciones').add({
+          'uid': 'sistema',
+          'usuario': 'Gonzalo_Gamer',
+          'texto': 'No puedo pasar al jefe del Templo de Obsidiana. ¡La espada de hielo no le hace nada! ¿Alguien sabe qué hacer? Les dejo captura.',
+          'imagenBase64': null,
+          'fotoDemo': true,
+          'likesUids': <String>['demo1', 'demo2'],
+          'dislikesUids': <String>[],
+          'comentarios': <String>[
+            'Guerrero_Jaguar: Tienes que pegarle cuando su escudo cambie a color rojo.',
+          ],
+          'fecha': FieldValue.serverTimestamp(),
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<String> _obtenerNombreActual() async {
+    final user = _auth.currentUser;
+    if (user == null) return 'Guerrero_Tequani';
+    try {
+      final doc = await _firestore.collection('usuarios').doc(user.uid).get();
+      if (doc.exists && doc.data()?['nombre'] != null) {
+        return doc.data()!['nombre'].toString();
+      }
+    } catch (_) {}
+    return user.email?.split('@').first ?? 'Guerrero_Tequani';
+  }
+
+  Future<void> _toggleLike(String docId, List<dynamic> likesUids, List<dynamic> dislikesUids) async {
+    final uid = _auth.currentUser?.uid ?? 'invitado';
+    final docRef = _firestore.collection('publicaciones').doc(docId);
+
+    if (likesUids.contains(uid)) {
+      await docRef.update({
+        'likesUids': FieldValue.arrayRemove([uid]),
+      });
+    } else {
+      await docRef.update({
+        'likesUids': FieldValue.arrayUnion([uid]),
+        'dislikesUids': FieldValue.arrayRemove([uid]),
+      });
+    }
+  }
+
+  Future<void> _toggleDislike(String docId, List<dynamic> likesUids, List<dynamic> dislikesUids) async {
+    final uid = _auth.currentUser?.uid ?? 'invitado';
+    final docRef = _firestore.collection('publicaciones').doc(docId);
+
+    if (dislikesUids.contains(uid)) {
+      await docRef.update({
+        'dislikesUids': FieldValue.arrayRemove([uid]),
+      });
+    } else {
+      await docRef.update({
+        'dislikesUids': FieldValue.arrayUnion([uid]),
+        'likesUids': FieldValue.arrayRemove([uid]),
+      });
+    }
+  }
+
+  Future<void> _eliminarPublicacion(String docId) async {
+    await _firestore.collection('publicaciones').doc(docId).delete();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Foro actualizado al 100%'),
-          backgroundColor: deepJadeGreen,
+          content: Text('Publicación eliminada de la nube'),
+          backgroundColor: tezontleRed,
           duration: Duration(seconds: 1),
         ),
       );
     }
   }
 
-  void _toggleLike(int index) {
-    setState(() {
-      final post = _publicaciones[index];
-      if (post.likeDado) {
-        post.likeDado = false;
-        post.likes -= 1;
-      } else {
-        post.likeDado = true;
-        post.likes += 1;
-        if (post.dislikeDado) {
-          post.dislikeDado = false;
-          post.dislikes -= 1;
-        }
-      }
-    });
-  }
-
-  void _toggleDislike(int index) {
-    setState(() {
-      final post = _publicaciones[index];
-      if (post.dislikeDado) {
-        post.dislikeDado = false;
-        post.dislikes -= 1;
-      } else {
-        post.dislikeDado = true;
-        post.dislikes += 1;
-        if (post.likeDado) {
-          post.likeDado = false;
-          post.likes -= 1;
-        }
-      }
-    });
-  }
-
-  void _mostrarModalComentarios(int index) {
-    final post = _publicaciones[index];
+  void _mostrarModalComentarios(String docId) {
     showModalBottomSheet(
       context: context,
       backgroundColor: obsidianBlack,
@@ -194,22 +181,26 @@ class _InicioScreenState extends State<InicioScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom,
-                left: 20,
-                right: 20,
-                top: 20,
-              ),
-              child: Column(
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom,
+            left: 20,
+            right: 20,
+            top: 20,
+          ),
+          child: StreamBuilder<DocumentSnapshot>(
+            stream: _firestore.collection('publicaciones').doc(docId).snapshots(),
+            builder: (context, snapshot) {
+              final data = snapshot.data?.data() as Map<String, dynamic>?;
+              final List<dynamic> comentarios = data?['comentarios'] ?? [];
+
+              return Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Comentarios de la Comunidad', style: TextStyle(color: ochreGold, fontSize: 18, fontWeight: FontWeight.bold)),
+                  const Text('Comentarios en Tiempo Real', style: TextStyle(color: ochreGold, fontSize: 18, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 12),
-                  if (post.comentarios.isEmpty)
+                  if (comentarios.isEmpty)
                     const Padding(
                       padding: EdgeInsets.symmetric(vertical: 16),
                       child: Text('Aún no hay comentarios. ¡Sé el primero en ayudar!', style: TextStyle(color: amatePaper)),
@@ -220,7 +211,7 @@ class _InicioScreenState extends State<InicioScreen> {
                       child: ListView.builder(
                         physics: const BouncingScrollPhysics(),
                         shrinkWrap: true,
-                        itemCount: post.comentarios.length,
+                        itemCount: comentarios.length,
                         itemBuilder: (context, cIndex) {
                           return Container(
                             margin: const EdgeInsets.only(bottom: 8),
@@ -230,7 +221,7 @@ class _InicioScreenState extends State<InicioScreen> {
                               borderRadius: BorderRadius.circular(10),
                               border: Border.all(color: deepJadeGreen),
                             ),
-                            child: Text(post.comentarios[cIndex], style: const TextStyle(color: amatePaper, fontSize: 13)),
+                            child: Text(comentarios[cIndex].toString(), style: const TextStyle(color: amatePaper, fontSize: 13)),
                           );
                         },
                       ),
@@ -254,13 +245,14 @@ class _InicioScreenState extends State<InicioScreen> {
                       IconButton(
                         style: IconButton.styleFrom(backgroundColor: tezontleRed, padding: const EdgeInsets.all(14)),
                         icon: const Icon(Icons.send, color: amatePaper),
-                        onPressed: () {
-                          if (_comentarioController.text.isNotEmpty) {
-                            setState(() {
-                              post.comentarios.add('Tú: ${_comentarioController.text}');
-                            });
-                            setModalState(() {});
+                        onPressed: () async {
+                          final texto = _comentarioController.text.trim();
+                          if (texto.isNotEmpty) {
                             _comentarioController.clear();
+                            final autor = await _obtenerNombreActual();
+                            await _firestore.collection('publicaciones').doc(docId).update({
+                              'comentarios': FieldValue.arrayUnion(['$autor: $texto']),
+                            });
                           }
                         },
                       ),
@@ -268,9 +260,9 @@ class _InicioScreenState extends State<InicioScreen> {
                   ),
                   const SizedBox(height: 20),
                 ],
-              ),
-            );
-          },
+              );
+            },
+          ),
         );
       },
     );
@@ -278,6 +270,7 @@ class _InicioScreenState extends State<InicioScreen> {
 
   void _mostrarModalPublicar() {
     Uint8List? fotoSeleccionadaBytes;
+    bool subiendoPost = false;
 
     showModalBottomSheet(
       context: context,
@@ -300,7 +293,7 @@ class _InicioScreenState extends State<InicioScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Crear Publicación', style: TextStyle(color: ochreGold, fontSize: 18, fontWeight: FontWeight.bold)),
+                  const Text('Crear Publicación en la Nube', style: TextStyle(color: ochreGold, fontSize: 18, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 16),
                   TextField(
                     controller: _mensajeController,
@@ -343,7 +336,12 @@ class _InicioScreenState extends State<InicioScreen> {
                     children: [
                       TextButton.icon(
                         onPressed: () async {
-                          final XFile? imagen = await _picker.pickImage(source: ImageSource.gallery);
+                          // Compresión automática para que se guarde al instante en Firestore
+                          final XFile? imagen = await _picker.pickImage(
+                            source: ImageSource.gallery,
+                            maxWidth: 700,
+                            imageQuality: 65,
+                          );
                           if (imagen != null) {
                             final bytes = await imagen.readAsBytes();
                             setModalState(() {
@@ -357,33 +355,50 @@ class _InicioScreenState extends State<InicioScreen> {
                           style: const TextStyle(color: ochreGold, fontWeight: FontWeight.bold),
                         ),
                       ),
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: tezontleRed,
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                        ),
-                        onPressed: () {
-                          if (_mensajeController.text.isNotEmpty || fotoSeleccionadaBytes != null) {
-                            setState(() {
-                              _publicaciones.insert(
-                                0,
-                                PostForo(
-                                  usuario: 'Tú (Guerrero Tequani)',
-                                  tiempo: 'Justo ahora',
-                                  texto: _mensajeController.text.isEmpty ? 'Compartió una captura de pantalla.' : _mensajeController.text,
-                                  imagenBytes: fotoSeleccionadaBytes,
-                                  likes: 0,
-                                  dislikes: 0,
-                                ),
-                              );
-                            });
-                            _mensajeController.clear();
-                            Navigator.pop(context);
-                          }
-                        },
-                        icon: const Icon(Icons.publish, color: amatePaper, size: 18),
-                        label: const Text('Publicar', style: TextStyle(color: amatePaper, fontWeight: FontWeight.bold)),
-                      ),
+                      subiendoPost
+                          ? const Padding(
+                              padding: EdgeInsets.only(right: 20),
+                              child: SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(color: ochreGold, strokeWidth: 2.5),
+                              ),
+                            )
+                          : ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: tezontleRed,
+                                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                              ),
+                              onPressed: () async {
+                                if (_mensajeController.text.trim().isNotEmpty || fotoSeleccionadaBytes != null) {
+                                  setModalState(() => subiendoPost = true);
+                                  final autor = await _obtenerNombreActual();
+                                  final uid = _auth.currentUser?.uid ?? 'invitado';
+                                  final String? base64Img = fotoSeleccionadaBytes != null
+                                      ? base64Encode(fotoSeleccionadaBytes!)
+                                      : null;
+
+                                  await _firestore.collection('publicaciones').add({
+                                    'uid': uid,
+                                    'usuario': autor,
+                                    'texto': _mensajeController.text.trim().isEmpty
+                                        ? 'Compartió una captura de pantalla.'
+                                        : _mensajeController.text.trim(),
+                                    'imagenBase64': base64Img,
+                                    'fotoDemo': false,
+                                    'likesUids': <String>[],
+                                    'dislikesUids': <String>[],
+                                    'comentarios': <String>[],
+                                    'fecha': FieldValue.serverTimestamp(),
+                                  });
+
+                                  _mensajeController.clear();
+                                  if (context.mounted) Navigator.pop(context);
+                                }
+                              },
+                              icon: const Icon(Icons.cloud_upload, color: amatePaper, size: 18),
+                              label: const Text('Publicar', style: TextStyle(color: amatePaper, fontWeight: FontWeight.bold)),
+                            ),
                     ],
                   ),
                   const SizedBox(height: 20),
@@ -396,8 +411,19 @@ class _InicioScreenState extends State<InicioScreen> {
     );
   }
 
+  String _formatearFecha(Timestamp? timestamp) {
+    if (timestamp == null) return 'Sincronizando...';
+    final diff = DateTime.now().difference(timestamp.toDate());
+    if (diff.inMinutes < 1) return 'Justo ahora';
+    if (diff.inMinutes < 60) return 'Hace ${diff.inMinutes} min';
+    if (diff.inHours < 24) return 'Hace ${diff.inHours} h';
+    return 'Hace ${diff.inDays} días';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final miUid = _auth.currentUser?.uid ?? 'invitado';
+
     return Scaffold(
       backgroundColor: obsidianBlack,
       appBar: AppBar(
@@ -407,202 +433,210 @@ class _InicioScreenState extends State<InicioScreen> {
         elevation: 0,
         actions: [
           IconButton(
-            tooltip: 'Recargar foro',
-            icon: const Icon(Icons.refresh, color: ochreGold),
+            tooltip: 'Estado de conexión Firebase',
+            icon: const Icon(Icons.cloud_done, color: ochreGold),
             onPressed: () {
-              setState(() => _cargandoModulo = true);
-              Future.delayed(const Duration(milliseconds: 500), () {
-                if (mounted) setState(() => _cargandoModulo = false);
-              });
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Conectado en tiempo real con Cloud Firestore'),
+                  backgroundColor: deepJadeGreen,
+                  duration: Duration(seconds: 1),
+                ),
+              );
             },
           ),
         ],
       ),
-      body: _cargandoModulo
-          ? const Center(
+      body: StreamBuilder<QuerySnapshot>(
+        stream: _firestore.collection('publicaciones').orderBy('fecha', descending: true).snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   CircularProgressIndicator(color: ochreGold),
                   SizedBox(height: 16),
-                  Text('Cargando pergaminos del foro...', style: TextStyle(color: amatePaper)),
+                  Text('Sincronizando pergaminos desde Firebase...', style: TextStyle(color: amatePaper)),
                 ],
               ),
-            )
-          : RefreshIndicator(
-              color: ochreGold,
-              backgroundColor: obsidianBlack,
-              onRefresh: _recargarForo,
-              child: ListView.builder(
-                physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
-                padding: const EdgeInsets.all(12),
-                itemCount: _publicaciones.length + 1,
-                itemBuilder: (context, index) {
-                  if (index == 0) {
-                    return TweenAnimationBuilder<double>(
-                      duration: const Duration(milliseconds: 500),
-                      tween: Tween(begin: 0.0, end: 1.0),
-                      builder: (context, value, child) {
-                        return Opacity(
-                          opacity: value,
-                          child: Transform.translate(
-                            offset: Offset(0, 20 * (1 - value)),
-                            child: child,
-                          ),
-                        );
-                      },
-                      child: Container(
-                        width: double.infinity,
-                        margin: const EdgeInsets.only(bottom: 16),
-                        padding: const EdgeInsets.all(18),
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                            colors: [deepJadeGreen, obsidianBlack],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                          ),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: ochreGold.withValues(alpha: 0.4), width: 1.5),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Row(
-                              children: [
-                                Icon(Icons.auto_awesome, color: ochreGold, size: 22),
-                                SizedBox(width: 8),
-                                Text('¡Bienvenido a Tequani!', style: TextStyle(color: ochreGold, fontSize: 20, fontWeight: FontWeight.bold)),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Comparte tus capturas de pantalla, pregunta cómo vencer a los guardianes de obsidiana y ayuda a otros guerreros.',
-                              style: TextStyle(color: amatePaper.withValues(alpha: 0.9), fontSize: 14, height: 1.4),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  }
+            );
+          }
 
-                  final postIndex = index - 1;
-                  final post = _publicaciones[postIndex];
+          final docs = snapshot.data?.docs ?? [];
 
-                  return TweenAnimationBuilder<double>(
-                    duration: Duration(milliseconds: 400 + (postIndex * 100)),
-                    tween: Tween(begin: 0.0, end: 1.0),
-                    builder: (context, value, child) {
-                      return Opacity(
-                        opacity: value,
-                        child: Transform.translate(
-                          offset: Offset(0, 30 * (1 - value)),
-                          child: child,
-                        ),
-                      );
-                    },
-                    child: Card(
-                      color: deepJadeGreen.withValues(alpha: 0.25),
-                      margin: const EdgeInsets.only(bottom: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                        side: const BorderSide(color: deepJadeGreen, width: 1),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                CircleAvatar(
-                                  backgroundColor: post.usuario.contains('Tú') ? ochreGold : tezontleRed,
-                                  child: Icon(Icons.person, color: post.usuario.contains('Tú') ? obsidianBlack : amatePaper),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(post.usuario, style: const TextStyle(color: ochreGold, fontWeight: FontWeight.bold, fontSize: 15)),
-                                      Text(post.tiempo, style: TextStyle(color: amatePaper.withValues(alpha: 0.7), fontSize: 12)),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 12),
-                            Text(post.texto, style: const TextStyle(color: amatePaper, fontSize: 15, height: 1.3)),
-                            const SizedBox(height: 12),
-                            
-                            if (post.imagenBytes != null) ...[
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(10),
-                                child: Image.memory(
-                                  post.imagenBytes!,
-                                  height: 220,
-                                  width: double.infinity,
-                                  fit: BoxFit.cover,
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                            ] else if (post.fotoDemo) ...[
-                              Container(
-                                height: 180,
-                                width: double.infinity,
-                                decoration: BoxDecoration(
-                                  color: obsidianBlack,
-                                  borderRadius: BorderRadius.circular(10),
-                                  border: Border.all(color: ochreGold.withValues(alpha: 0.4)),
-                                ),
-                                child: const Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.shield_moon, color: tezontleRed, size: 48),
-                                    SizedBox(height: 8),
-                                    Text('Captura: Jefe Templo de Obsidiana', style: TextStyle(color: ochreGold, fontSize: 13)),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                            ],
-
-                            const Divider(color: deepJadeGreen),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                TextButton.icon(
-                                  onPressed: () => _toggleLike(postIndex),
-                                  icon: Icon(
-                                    post.likeDado ? Icons.thumb_up : Icons.thumb_up_alt_outlined, 
-                                    color: post.likeDado ? tezontleRed : amatePaper, 
-                                    size: 20,
-                                  ),
-                                  label: Text('${post.likes}', style: TextStyle(color: post.likeDado ? tezontleRed : amatePaper)),
-                                ),
-                                TextButton.icon(
-                                  onPressed: () => _toggleDislike(postIndex),
-                                  icon: Icon(
-                                    post.dislikeDado ? Icons.thumb_down : Icons.thumb_down_alt_outlined, 
-                                    color: post.dislikeDado ? ochreGold : amatePaper, 
-                                    size: 20,
-                                  ),
-                                  label: Text('${post.dislikes}', style: TextStyle(color: post.dislikeDado ? ochreGold : amatePaper)),
-                                ),
-                                TextButton.icon(
-                                  onPressed: () => _mostrarModalComentarios(postIndex),
-                                  icon: const Icon(Icons.chat_bubble_outline, color: amatePaper, size: 20),
-                                  label: Text('Comentar (${post.comentarios.length})', style: const TextStyle(color: amatePaper)),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
+          return ListView.builder(
+            physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+            padding: const EdgeInsets.all(12),
+            itemCount: docs.length + 1,
+            itemBuilder: (context, index) {
+              if (index == 0) {
+                return Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [deepJadeGreen, obsidianBlack],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
                     ),
-                  );
-                },
-              ),
-            ),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: ochreGold.withValues(alpha: 0.4), width: 1.5),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.auto_awesome, color: ochreGold, size: 22),
+                          SizedBox(width: 8),
+                          Text('¡Bienvenido a Tequani!', style: TextStyle(color: ochreGold, fontSize: 20, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Foro conectado en vivo a la nube. Tus publicaciones, capturas, likes y comentarios se sincronizan al instante con todos los jugadores.',
+                        style: TextStyle(color: amatePaper.withValues(alpha: 0.9), fontSize: 14, height: 1.4),
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              final doc = docs[index - 1];
+              final data = doc.data() as Map<String, dynamic>;
+              final docId = doc.id;
+
+              final String usuario = (data['usuario'] ?? 'Guerrero').toString();
+              final String texto = (data['texto'] ?? '').toString();
+              final String? imagenBase64 = data['imagenBase64'] as String?;
+              final bool fotoDemo = data['fotoDemo'] == true;
+              final List<dynamic> likesUids = data['likesUids'] ?? [];
+              final List<dynamic> dislikesUids = data['dislikesUids'] ?? [];
+              final List<dynamic> comentarios = data['comentarios'] ?? [];
+              final Timestamp? fecha = data['fecha'] as Timestamp?;
+              final bool esMio = data['uid'] == miUid;
+
+              final bool likeDado = likesUids.contains(miUid);
+              final bool dislikeDado = dislikesUids.contains(miUid);
+
+              Uint8List? bytesDecodificados;
+              if (imagenBase64 != null && imagenBase64.isNotEmpty) {
+                try {
+                  bytesDecodificados = base64Decode(imagenBase64);
+                } catch (_) {}
+              }
+
+              return Card(
+                color: deepJadeGreen.withValues(alpha: 0.25),
+                margin: const EdgeInsets.only(bottom: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  side: const BorderSide(color: deepJadeGreen, width: 1),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          CircleAvatar(
+                            backgroundColor: esMio ? ochreGold : tezontleRed,
+                            child: Icon(Icons.person, color: esMio ? obsidianBlack : amatePaper),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(usuario, style: const TextStyle(color: ochreGold, fontWeight: FontWeight.bold, fontSize: 15)),
+                                Text(_formatearFecha(fecha), style: TextStyle(color: amatePaper.withValues(alpha: 0.7), fontSize: 12)),
+                              ],
+                            ),
+                          ),
+                          if (esMio)
+                            IconButton(
+                              tooltip: 'Borrar mi publicación',
+                              icon: const Icon(Icons.delete_outline, color: tezontleRed, size: 20),
+                              onPressed: () => _eliminarPublicacion(docId),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Text(texto, style: const TextStyle(color: amatePaper, fontSize: 15, height: 1.3)),
+                      const SizedBox(height: 12),
+
+                      if (bytesDecodificados != null) ...[
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: Image.memory(
+                            bytesDecodificados,
+                            height: 220,
+                            width: double.infinity,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ] else if (fotoDemo) ...[
+                        Container(
+                          height: 180,
+                          width: double.infinity,
+                          decoration: BoxDecoration(
+                            color: obsidianBlack,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: ochreGold.withValues(alpha: 0.4)),
+                          ),
+                          child: const Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.shield_moon, color: tezontleRed, size: 48),
+                              SizedBox(height: 8),
+                              Text('Captura: Jefe Templo de Obsidiana', style: TextStyle(color: ochreGold, fontSize: 13)),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+
+                      const Divider(color: deepJadeGreen),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          TextButton.icon(
+                            onPressed: () => _toggleLike(docId, likesUids, dislikesUids),
+                            icon: Icon(
+                              likeDado ? Icons.thumb_up : Icons.thumb_up_alt_outlined, 
+                              color: likeDado ? tezontleRed : amatePaper, 
+                              size: 20,
+                            ),
+                            label: Text('${likesUids.length}', style: TextStyle(color: likeDado ? tezontleRed : amatePaper)),
+                          ),
+                          TextButton.icon(
+                            onPressed: () => _toggleDislike(docId, likesUids, dislikesUids),
+                            icon: Icon(
+                              dislikeDado ? Icons.thumb_down : Icons.thumb_down_alt_outlined, 
+                              color: dislikeDado ? ochreGold : amatePaper, 
+                              size: 20,
+                            ),
+                            label: Text('${dislikesUids.length}', style: TextStyle(color: dislikeDado ? ochreGold : amatePaper)),
+                          ),
+                          TextButton.icon(
+                            onPressed: () => _mostrarModalComentarios(docId),
+                            icon: const Icon(Icons.chat_bubble_outline, color: amatePaper, size: 20),
+                            label: Text('Comentar (${comentarios.length})', style: const TextStyle(color: amatePaper)),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: tezontleRed,
         onPressed: _mostrarModalPublicar,
